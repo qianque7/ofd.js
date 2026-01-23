@@ -153,9 +153,8 @@ export const renderPage = function (pageDiv, page, tpls, fontResObj, drawParamRe
         });
     } else if (template) { // 当使用单个模板时
         renderLayerFromTemplate(tpls, template, pageDiv, fontResObj, drawParamResObj, multiMediaResObj);
-    } else {
-        console.error('ofd:Template not found!');
     }
+    // 没有模板也是正常情况，不需要报错
 
     const contentLayers = page[pageId]?.json?.['ofd:Content']?.['ofd:Layer'];
     let array = [];
@@ -295,13 +294,21 @@ export const renderImageObject = function (pageWidth, pageHeight, multiMediaResO
     let boundary = parseStBox(imageObject['@_Boundary']);
     boundary = converterBox(boundary);
     const resId = imageObject['@_ResourceID'];
-    if (multiMediaResObj[resId].format === 'gbig2') {
-        const img = multiMediaResObj[resId].img;
-        const width = multiMediaResObj[resId].width;
-        const height = multiMediaResObj[resId].height;
+    const mediaRes = multiMediaResObj[resId];
+    if (!mediaRes) {
+        console.warn(`MultiMedia resource not found: ${resId}`);
+        // 返回一个空的占位元素
+        let placeholder = document.createElement('div');
+        placeholder.setAttribute('style', `position:absolute;left:${boundary.x}px;top:${boundary.y}px;width:${boundary.w}px;height:${boundary.h}px;`);
+        return placeholder;
+    }
+    if (mediaRes.format === 'gbig2') {
+        const img = mediaRes.img;
+        const width = mediaRes.width;
+        const height = mediaRes.height;
         return renderImageOnCanvas(img, width, height, boundary, imageObject['pfIndex']);
     } else {
-        return renderImageOnDiv(pageWidth, pageHeight, multiMediaResObj[resId].img, boundary, false, false, null, null, imageObject['pfIndex']);
+        return renderImageOnDiv(pageWidth, pageHeight, mediaRes.img, boundary, false, false, null, null, imageObject['pfIndex']);
     }
 }
 
