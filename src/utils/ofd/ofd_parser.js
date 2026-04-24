@@ -294,6 +294,9 @@ const getMultiMediaRes = async function (zip, res, doc) {
         for (const item of array) {
             if (item) {
                 let file = item['ofd:MediaFile'];
+                if (!file || typeof file !== 'string') {
+                    continue;
+                }
                 if (res['@_BaseLoc']) {
                     if (file.indexOf(res['@_BaseLoc']) === -1) {
                         file = `${res['@_BaseLoc']}/${file}`
@@ -302,7 +305,8 @@ const getMultiMediaRes = async function (zip, res, doc) {
                 if (file.indexOf(doc) === -1) {
                     file = `${doc}/${file}`
                 }
-                if (item['@_Type'].toLowerCase() === 'image') {
+                const itemType = item['@_Type'] ? item['@_Type'].toLowerCase() : '';
+                if (itemType === 'image') {
                     const format = item['@_Format'];
                     const ext = getExtensionByPath(file);
                     if ((format && (format.toLowerCase() === 'gbig2' || format.toLowerCase() === 'jb2')) || ext && (ext.toLowerCase() === 'jb2' || ext.toLowerCase() === 'gbig2')) {
