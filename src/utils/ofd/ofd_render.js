@@ -177,8 +177,10 @@ export const renderPage = function (pageDiv, page, tpls, fontResObj, drawParamRe
         }
     }
     if (page[pageId].annotation) {
-        for (const annotation of page[pageId].annotation) {
-            renderAnnotation(pageDiv, annotation, fontResObj, drawParamResObj, multiMediaResObj);
+        // 注解按文件中出现的顺序自上而下列出（先出现的在上层）
+        // 渲染时从底到顶追加到 DOM，需按文件顺序反向绘制
+        for (let i = page[pageId].annotation.length - 1; i >= 0; i--) {
+            renderAnnotation(pageDiv, page[pageId].annotation[i], fontResObj, drawParamResObj, multiMediaResObj);
         }
     }
 }
@@ -275,7 +277,7 @@ const renderLayer = function (pageDiv, fontResObj, drawParamResObj, multiMediaRe
     pathObjectArray = pathObjectArray.concat(pathObjects);
     for (const pathObject of pathObjectArray) {
         if (pathObject) {
-            let svg = renderPathObject(drawParamResObj, pathObject, fillColor, strokeColor, lineWith, isStampAnnot)
+            let svg = renderPathObject(drawParamResObj, pathObject, fillColor, strokeColor, lineWith, isStampAnnot, fontResObj)
             pageDiv.appendChild(svg);
         }
     }
@@ -295,6 +297,7 @@ export const renderImageObject = function (pageWidth, pageHeight, multiMediaResO
     boundary = converterBox(boundary);
     const resId = imageObject['@_ResourceID'];
     const mediaRes = multiMediaResObj[resId];
+    const blendMode = imageObject['@_BlendMode'];
     if (!mediaRes) {
         console.warn(`MultiMedia resource not found: ${resId}`);
         // 返回一个空的占位元素
@@ -306,10 +309,40 @@ export const renderImageObject = function (pageWidth, pageHeight, multiMediaResO
         const img = mediaRes.img;
         const width = mediaRes.width;
         const height = mediaRes.height;
-        return renderImageOnCanvas(img, width, height, boundary, imageObject['pfIndex']);
+        const canvas = renderImageOnCanvas(img, width, height, boundary, imageObject['pfIndex']);
+        applyBlendMode(canvas, blendMode);
+        return canvas;
     } else {
-        return renderImageOnDiv(pageWidth, pageHeight, mediaRes.img, boundary, false, false, null, null, imageObject['pfIndex']);
+        const el = renderImageOnDiv(pageWidth, pageHeight, mediaRes.img, boundary, false, false, null, null, imageObject['pfIndex']);
+        applyBlendMode(el, blendMode);
+        return el;
     }
+}
+
+const OFD_BLEND_TO_CSS = {
+    'Normal': 'normal',
+    'Multiply': 'multiply',
+    'Screen': 'screen',
+    'Overlay': 'overlay',
+    'Darken': 'darken',
+    'Lighten': 'lighten',
+    'ColorDodge': 'color-dodge',
+    'ColorBurn': 'color-burn',
+    'HardLight': 'hard-light',
+    'SoftLight': 'soft-light',
+    'Difference': 'difference',
+    'Exclusion': 'exclusion',
+    'Hue': 'hue',
+    'Saturation': 'saturation',
+    'Color': 'color',
+    'Luminosity': 'luminosity',
+};
+
+const applyBlendMode = function (element, blendMode) {
+    if (!blendMode || !element) return;
+    const css = OFD_BLEND_TO_CSS[blendMode];
+    if (!css) return;
+    element.style.mixBlendMode = css;
 }
 
 const renderImageOnCanvas = function (img, imgWidth, imgHeight, boundary, oid){
@@ -379,6 +412,16 @@ export const renderTextObject = function (fontResObj, textObject, defaultFillCol
             defaultFillOpacity = alpha>1? alpha/255:alpha;
         }
     }
+    const objectAlpha = textObject['@_Alpha'];
+    if (objectAlpha !== undefined && objectAlpha !== null) {
+        const a = parseFloat(objectAlpha);
+        if (!isNaN(a)) {
+            defaultFillOpacity = a > 1 ? a / 255 : a;
+        }
+    }
+    if (!defaultFillColor) {
+        defaultFillColor = 'rgb(0, 0, 0)';
+    }
     for (const textCodePoint of textCodePointList) {
         if (textCodePoint && !isNaN(textCodePoint.x)) {
             let text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -409,7 +452,89 @@ export const renderTextObject = function (fontResObj, textObject, defaultFillCol
     return svg;
 }
 
-export const renderPathObject = function (drawParamResObj, pathObject, defaultFillColor, defaultStrokeColor, defaultLineWith, isStampAnnot) {
+let patternIdCounter = 0;
+
+const buildPatternFill = function (svg, patternDef, fontResObj, defaultFillColor, defaultAlpha) {
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const xStepRaw = parseFloat(patternDef['@_XStep']);
+    const yStepRaw = parseFloat(patternDef['@_YStep']);
+    const widthRaw = parseFloat(patternDef['@_Width']);
+    const heightRaw = parseFloat(patternDef['@_Height']);
+    const xStep = converterDpi(!isNaN(xStepRaw) ? xStepRaw : (!isNaN(widthRaw) ? widthRaw : 0));
+    const yStep = converterDpi(!isNaN(yStepRaw) ? yStepRaw : (!isNaN(heightRaw) ? heightRaw : 0));
+    if (!xStep || !yStep) {
+        return null;
+    }
+    const patternId = `ofd_pattern_${++patternIdCounter}`;
+    const defs = document.createElementNS(SVG_NS, 'defs');
+    const pattern = document.createElementNS(SVG_NS, 'pattern');
+    pattern.setAttribute('id', patternId);
+    pattern.setAttribute('patternUnits', 'userSpaceOnUse');
+    pattern.setAttribute('width', xStep);
+    pattern.setAttribute('height', yStep);
+    const ctm = patternDef['@_CTM'];
+    if (ctm) {
+        const c = parseCtm(ctm);
+        pattern.setAttribute('patternTransform',
+            `matrix(${c[0]} ${c[1]} ${c[2]} ${c[3]} ${converterDpi(c[4])} ${converterDpi(c[5])})`);
+    }
+    const cellContent = patternDef['ofd:CellContent'];
+    if (cellContent) {
+        let textObjects = [].concat(cellContent['ofd:TextObject']).filter(Boolean);
+        for (const textObject of textObjects) {
+            appendPatternTextObject(pattern, textObject, fontResObj, defaultFillColor, defaultAlpha);
+        }
+    }
+    defs.appendChild(pattern);
+    svg.appendChild(defs);
+    return `url(#${patternId})`;
+};
+
+const appendPatternTextObject = function (pattern, textObject, fontResObj, defaultFillColor, defaultAlpha) {
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const font = textObject['@_Font'];
+    const weight = textObject['@_Weight'];
+    const size = converterDpi(parseFloat(textObject['@_Size']));
+    const ctm = textObject['@_CTM'];
+    let opacity = 1;
+    const objectAlpha = textObject['@_Alpha'] !== undefined ? textObject['@_Alpha'] : defaultAlpha;
+    if (objectAlpha !== undefined && objectAlpha !== null) {
+        const a = parseFloat(objectAlpha);
+        if (!isNaN(a)) {
+            opacity = a > 1 ? a / 255 : a;
+        }
+    }
+    let fillColorValue = defaultFillColor || 'rgb(0, 0, 0)';
+    const localFill = textObject['ofd:FillColor'];
+    if (localFill) {
+        fillColorValue = parseColor(localFill['@_Value']);
+        const a = localFill['@_Alpha'];
+        if (a) {
+            opacity = a > 1 ? a / 255 : a;
+        }
+    }
+    const textCodes = [].concat(textObject['ofd:TextCode']).filter(Boolean);
+    const points = calTextPoint(textCodes);
+    for (const p of points) {
+        if (!p || isNaN(p.x)) continue;
+        const text = document.createElementNS(SVG_NS, 'text');
+        text.setAttribute('x', p.x);
+        text.setAttribute('y', p.y);
+        text.innerHTML = p.text;
+        if (ctm) {
+            const c = parseCtm(ctm);
+            text.setAttribute('transform',
+                `matrix(${c[0]} ${c[1]} ${c[2]} ${c[3]} ${converterDpi(c[4])} ${converterDpi(c[5])})`);
+        }
+        text.setAttribute('fill', fillColorValue);
+        text.setAttribute('fill-opacity', opacity);
+        text.setAttribute('style',
+            `font-weight:${weight};font-size:${size}px;font-family:${getFontFamily(fontResObj?.[font])};`);
+        pattern.appendChild(text);
+    }
+};
+
+export const renderPathObject = function (drawParamResObj, pathObject, defaultFillColor, defaultStrokeColor, defaultLineWith, isStampAnnot, fontResObj) {
     let boundary = parseStBox(pathObject['@_Boundary']);
     boundary = converterBox(boundary);
     let lineWidth = pathObject['@_LineWidth'];
@@ -440,8 +565,13 @@ export const renderPathObject = function (drawParamResObj, pathObject, defaultFi
     }
     let fillStyle = 'fill: none;';
     const fillColor = pathObject['ofd:FillColor'];
+    let patternFillUrl = null;
     if (fillColor) {
         defaultFillColor = parseColor(fillColor['@_Value'])
+        const patternDef = fillColor['ofd:Pattern'];
+        if (patternDef) {
+            patternFillUrl = buildPatternFill(svg, patternDef, fontResObj, defaultFillColor, fillColor['@_Alpha']);
+        }
     }
     if (defaultLineWith > 0 && !defaultStrokeColor) {
         defaultStrokeColor = defaultFillColor;
@@ -454,7 +584,11 @@ export const renderPathObject = function (drawParamResObj, pathObject, defaultFi
         strokeStyle = ``;
     }
     if (pathObject['@_Fill'] != 'false') {
-        fillStyle = `fill:${isStampAnnot ? 'none' : defaultFillColor ? defaultFillColor : 'none'};`;
+        if (patternFillUrl) {
+            fillStyle = `fill:${patternFillUrl};`;
+        } else {
+            fillStyle = `fill:${isStampAnnot ? 'none' : defaultFillColor ? defaultFillColor : 'none'};`;
+        }
     }
     path.setAttribute('style', `${strokeStyle};${fillStyle}`)
     let d = '';
